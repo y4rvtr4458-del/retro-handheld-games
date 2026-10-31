@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Football '78</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<style>
+  html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;font-family:'Courier New',monospace;touch-action:none;-webkit-user-select:none;user-select:none;}
+  #wrap{display:flex;flex-direction:column;height:100%;color:#ff3b1f;}
+  #hud{display:flex;justify-content:space-between;padding:8px 14px;font-size:4.6vw;text-shadow:0 0 8px #ff3b1f;letter-spacing:1px;flex-shrink:0;}
+  #hud span{white-space:nowrap;}
+  #field{flex:1;position:relative;background:#050200;border-top:2px solid #330d00;border-bottom:2px solid #330d00;overflow:hidden;}
+  canvas{display:block;width:100%;height:100%;}
+  #msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:7.5vw;color:#ff3b1f;text-shadow:0 0 16px #ff3b1f;text-align:center;display:none;z-index:5;white-space:pre-line;line-height:1.3;}
+  #title{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:6;background:#050200;}
+  #title h2{font-size:8vw;text-shadow:0 0 14px #ff3b1f;margin:0 0 3vh;letter-spacing:2px;}
+  #title .blink{font-size:4.5vw;animation:blink 1s step-start infinite;}
+  #title .hi{margin-top:4vh;font-size:4vw;color:#ffd400;text-shadow:0 0 10px #ffd400;}
+  @keyframes blink{50%{opacity:0;}}
+  #controls{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:12px 18px calc(12px + env(safe-area-inset-bottom));}
+  .dpad{display:grid;grid-template-columns:58px 58px 58px;grid-template-rows:58px 58px 58px;gap:4px;}
+  .dpad button{background:#140000;border:2px solid #ff3b1f;color:#ff3b1f;font-size:20px;border-radius:8px;}
+  .dpad button:active{background:#ff3b1f;color:#000;}
+  #up{grid-column:2;grid-row:1;} #left{grid-column:1;grid-row:2;} #right{grid-column:3;grid-row:2;} #down{grid-column:2;grid-row:3;}
+  #actionBtns{display:flex;flex-direction:column;gap:8px;}
+  #actionBtns button{width:86px;height:42px;background:#140000;border:3px solid #ff3b1f;color:#ff3b1f;border-radius:10px;font-weight:bold;font-size:12px;}
+  #actionBtns button:active{background:#ff3b1f;color:#000;}
+  #topbar{position:absolute;top:8px;left:0;right:0;display:flex;justify-content:space-between;padding:0 10px;z-index:10;}
+  #back{color:#883;text-decoration:none;font-size:4vw;}
+  #mute{background:none;border:none;color:#883;font-size:4.5vw;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="topbar">
+    <a href="../index.html" id="back">‹ MENU</a>
+    <button id="mute">🔊</button>
+  </div>
+  <div id="hud">
+    <span id="score">SCORE 00</span>
+    <span id="down">DOWN 1&amp;10</span>
+    <span id="qtr">Q1 1:30</span>
+  </div>
+  <div id="field">
+    <canvas id="c"></canvas>
+    <div id="msg"></div>
+    <div id="title">
+      <h2>🏈 FOOTBALL '78</h2>
+      <div class="blink">TAP START TO PLAY</div>
+      <div class="hi" id="hiscore">HI 00</div>
+    </div>
+  </div>
+  <div id="controls">
+    <div class="dpad">
+      <button id="up">▲</button>
+      <button id="left">◄</button>
+      <button id="right">►</button>
+      <button id="down">▼</button>
+    </div>
+    <div id="actionBtns">
+      <button id="kick">KICK</button>
+      <button id="pass">PASS</button>
+      <button id="start">START</button>
+    </div>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const field = document.getElementById('field');
+function resize(){ canvas.width = field.clientWidth; canvas.height = field.clientHeight; }
+window.addEventListener('resize', resize); resize();
+
+// --- Audio ---
+let actx, muted = false;
+function beep(freq, dur, type='square'){
+  if(muted) return;
+  try{
+    if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+    const o = actx.createOscillator(); const g = actx.createGain();
+    o.type = type; o.frequency.value = freq; g.gain.value = 0.08;
+    o.connect(g); g.connect(actx.destination); o.start();
+    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+    o.stop(actx.currentTime + dur);
+  }catch(e){}
+}
+function vibrate(pattern){ try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){} }
+document.getElementById('mute').addEventListener('click', ()=>{
+  muted = !muted;
+  document.getElementById('mute').textContent = muted ? '🔇' : '🔊';
+});
+
+// --- High score ---
+const HI_KEY = 'retro_football_hi';
+let hiscore = parseInt(localStorage.getItem(HI_KEY) || '0', 10);
+document.getElementById('hiscore').textContent = 'HI ' + String(hiscore).padStart(2,'0');
+function saveHi(){
+  if(score > hiscore){ hiscore = score; localStorage.setItem(HI_KEY, String(hiscore)); }
+}
+
+// --- Game state ---
+const LANES = 5;
+let laneIdx = 2;
+let playerY = 0.82;
+let score = 0, downNum = 1, yardsToGo = 10, quarter = 1, qTime = 90; // seconds per quarter
+let defenders = [];
+let running = false;
+let gameOver = true;
+let baseSpeed = 0.0021;
+let speed = baseSpeed;
+let level = 0; // increases difficulty after each score
+let qTimer = null;
+
+function resetDown(firstDown){
+  laneIdx = 2;
+  playerY = 0.82;
+  defenders = [];
+  const n = 3 + Math.min(3, level) + Math.floor(Math.random()*2);
+  for(let i=0;i<n;i++){
+    defenders.push({lane: Math.floor(Math.random()*LANES), y: 0.05 + Math.random()*0.5});
+  }
+  running = false;
+  showMsg(firstDown ? '1ST & 10' : ('DOWN '+downNum+' & '+yardsToGo), 850);
+}
+
+function showMsg(text, ms){
+  const m = document.getElementById('msg');
+  m.textContent = text; m.style.display = 'block';
+  clearTimeout(showMsg._t);
+  showMsg._t = setTimeout(()=>{ m.style.display='none'; }, ms || 1200);
+}
+
+function updateHud(){
+  document.getElementById('score').textContent = 'SCORE ' + String(score).padStart(2,'0');
+  document.getElementById('down').textContent = 'DOWN ' + downNum + '&' + yardsToGo;
+  const mm = Math.floor(qTime/60), ss = String(qTime%60).padStart(2,'0');
+  document.getElementById('qtr').textContent = 'Q' + quarter + ' ' + mm + ':' + ss;
+}
+
+function startPlay(){ if(gameOver) return; running = true; }
+
+function endGame(){
+  gameOver = true; running = false;
+  clearInterval(qTimer);
+  saveHi();
+  showMsg('GAME OVER\\nFINAL '+score+'\\nHI '+hiscore, 4000);
+  setTimeout(()=>{ document.getElementById('title').style.display='flex'; document.getElementById('hiscore').textContent='HI '+String(hiscore).padStart(2,'0'); }, 1600);
+}
+
+function nextQuarter(){
+  quarter++;
+  if(quarter > 4){ endGame(); return; }
+  qTime = 90;
+  showMsg('END OF QUARTER\\nQ'+quarter, 1400);
+}
+
+function touchdown(){
+  score += 6;
+  level++; speed = baseSpeed + level*0.0004;
+  beep(880,0.15); setTimeout(()=>beep(1200,0.25),150);
+  vibrate([40,30,80]);
+  showMsg('TOUCHDOWN!\\n+6', 1400);
+  downNum = 1; yardsToGo = 10;
+  updateHud();
+  setTimeout(()=>{ if(!gameOver) resetDown(true); }, 1400);
+}
+
+function tackled(){
+  beep(120,0.3,'sawtooth');
+  vibrate(60);
+  downNum++;
+  yardsToGo = Math.max(1, yardsToGo - Math.floor(2+Math.random()*4));
+  if(yardsToGo <= 0){ downNum = 1; yardsToGo = 10; showMsg('1ST DOWN!', 900); }
+  if(downNum > 4){
+    showMsg('TURNOVER\\nON DOWNS', 1300);
+    downNum = 1; yardsToGo = 10;
+  } else {
+    showMsg('TACKLED!', 800);
+  }
+  updateHud();
+  setTimeout(()=>{ if(!gameOver) resetDown(downNum===1); }, 1200);
+}
+
+function kick(){
+  if(!running || gameOver) return;
+  beep(500,0.1);
+  showMsg('PUNT!', 800);
+  downNum = 1; yardsToGo = 10;
+  running = false;
+  setTimeout(()=>{ if(!gameOver) resetDown(true); }, 800);
+}
+
+function longPass(){
+  if(!running || gameOver) return;
+  const success = Math.random() < 0.55;
+  running = false;
+  if(success){
+    playerY = Math.max(0.1, playerY - 0.35);
+    beep(700,0.12);
+    showMsg('COMPLETE PASS!', 900);
+    yardsToGo = Math.max(1, yardsToGo-15);
+    if(yardsToGo<=0){ downNum=1; yardsToGo=10; }
+    updateHud();
+    setTimeout(()=>{ if(!gameOver) startPlay(); }, 950);
+  } else {
+    beep(140,0.3,'sawtooth');
+    vibrate(80);
+    showMsg('INTERCEPTED!', 1200);
+    downNum=1; yardsToGo=10;
+    setTimeout(()=>{ if(!gameOver) resetDown(true); }, 1200);
+  }
+}
+
+function moveLane(d){ if(gameOver) return; laneIdx = Math.max(0, Math.min(LANES-1, laneIdx + d)); beep(300,0.04); }
+document.getElementById('left').addEventListener('touchstart', e=>{e.preventDefault(); moveLane(-1);});
+document.getElementById('right').addEventListener('touchstart', e=>{e.preventDefault(); moveLane(1);});
+document.getElementById('left').addEventListener('mousedown', ()=>moveLane(-1));
+document.getElementById('right').addEventListener('mousedown', ()=>moveLane(1));
+document.getElementById('up').addEventListener('touchstart', e=>{e.preventDefault(); startPlay();});
+document.getElementById('up').addEventListener('mousedown', startPlay);
+document.getElementById('kick').addEventListener('click', kick);
+document.getElementById('pass').addEventListener('click', longPass);
+document.getElementById('start').addEventListener('click', ()=>{
+  document.getElementById('title').style.display='none';
+  score=0; downNum=1; yardsToGo=10; quarter=1; qTime=90; level=0; speed=baseSpeed; gameOver=false;
+  updateHud();
+  resetDown(true);
+  clearInterval(qTimer);
+  qTimer = setInterval(()=>{
+    if(gameOver) return;
+    qTime--;
+    if(qTime<=0) nextQuarter();
+    updateHud();
+  }, 1000);
+});
+document.addEventListener('keydown', (e)=>{
+  if(e.key==='ArrowLeft') moveLane(-1);
+  if(e.key==='ArrowRight') moveLane(1);
+  if(e.key==='ArrowUp') startPlay();
+  if(e.key===' ') kick();
+  if(e.key==='p') longPass();
+});
+
+updateHud();
+
+function drawDotGrid(w,h){
+  ctx.fillStyle = 'rgba(255,59,31,0.035)';
+  const step = 14;
+  for(let x=step/2; x<w; x+=step){
+    for(let y=step/2; y<h; y+=step){
+      ctx.fillRect(x-1,y-1,2,2);
+    }
+  }
+}
+
+function loop(){
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = '#050200';
+  ctx.fillRect(0,0,w,h);
+  drawDotGrid(w,h);
+
+  ctx.strokeStyle = 'rgba(255,59,31,0.15)';
+  ctx.lineWidth = 2;
+  for(let i=1;i<10;i++){
+    const y = h*i/10;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+  }
+
+  const laneW = w/LANES;
+
+  if(running && !gameOver){
+    playerY -= speed;
+    for(const d of defenders){
+      d.y += speed*0.9;
+      if(d.lane < laneIdx) d.lane += (Math.random()<0.02?1:0);
+      if(d.lane > laneIdx) d.lane -= (Math.random()<0.02?1:0);
+    }
+    for(const d of defenders){
+      if(d.lane === laneIdx && Math.abs(d.y - playerY) < 0.035){
+        running = false; tackled(); break;
+      }
+    }
+    if(playerY <= 0.06){ running = false; touchdown(); }
+  }
+
+  ctx.shadowColor = '#ff3b1f';
+  for(const d of defenders){
+    const cx = laneW*d.lane + laneW/2;
+    const cy = d.y*h;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#ff3b1f';
+    ctx.fillRect(cx-9, cy-9, 18, 18);
+  }
+
+  const px = laneW*laneIdx + laneW/2;
+  const py = playerY*h;
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = '#ffd400';
+  ctx.fillRect(px-10, py-10, 20, 20);
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = 'rgba(255,59,31,0.08)';
+  ctx.fillRect(0,0,w,h*0.06);
+  ctx.fillRect(0,h*0.94,w,h*0.06);
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
